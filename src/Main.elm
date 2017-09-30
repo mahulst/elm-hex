@@ -2,7 +2,6 @@ module Main exposing (..)
 
 import AnimationFrame
 import Html exposing (Html, text, div, img)
-import Html.Lazy
 import Html.Attributes exposing (src)
 import Math.Matrix4 as Mat4 exposing (Mat4)
 import Math.Vector3 as Vec3 exposing (vec3, Vec3, toTuple)
@@ -10,6 +9,7 @@ import Math.Vector4 as Vec4
 import WebGL exposing (Mesh, Shader)
 import Time exposing (Time)
 import Task
+import Array exposing (Array)
 
 
 ---- MODEL ----
@@ -17,8 +17,9 @@ import Task
 
 type alias Model =
     { theta : Float
-    , grid : List Position
+    , grid : List (Mesh Vertex)
     , lastDelta : Float
+    , gridHeight : Array Float
     }
 
 
@@ -39,12 +40,17 @@ type alias Uniforms =
 
 init : ( Model, Cmd Msg )
 init =
-    ( { theta = 0
-      , grid = List.range 0 100 |> List.map (\x -> { x = rem x 10, y = x // 10 })
-      , lastDelta = 0
-      }
-    , Cmd.batch [ send (DeltaTime (Time.inMilliseconds 0)) ]
-    )
+    let
+        gridHeight =
+            Array.fromList [ 0, 0.1, 0.3, 0.5, 0.7, 1.1, 0, 1.3, 1.7, 0, 0 ]
+    in
+        ( { theta = 0
+          , grid = List.range 0 10 |> List.map (hex gridHeight)
+          , lastDelta = 0
+          , gridHeight = gridHeight
+          }
+        , Cmd.batch [ send (DeltaTime (Time.inMilliseconds 0)) ]
+        )
 
 
 
@@ -104,24 +110,20 @@ subscriptions model =
 
 view : Model -> Html Msg
 view model =
-    Html.Lazy.lazy
-        (\grid ->
-            WebGL.toHtml
-                [ Html.Attributes.width 1000
-                , Html.Attributes.height 1000
-                , Html.Attributes.style [ ( "display", "block" ) ]
-                ]
-                (List.map hexView grid)
-        )
-        model.grid
+    WebGL.toHtml
+        [ Html.Attributes.width 1000
+        , Html.Attributes.height 1000
+        , Html.Attributes.style [ ( "display", "block" ) ]
+        ]
+        (List.map hexView model.grid)
 
 
-hexView : Position -> WebGL.Entity
-hexView pos =
+hexView : Mesh Vertex -> WebGL.Entity
+hexView hex2 =
     WebGL.entity
         vertexShader
         fragmentShader
-        (hex pos)
+        hex2
         uniforms
 
 
@@ -132,12 +134,12 @@ perspective =
 
 cameraPos : Vec3
 cameraPos =
-    vec3 0 8 5
+    vec3 2 8 5
 
 
 camera : Mat4
 camera =
-    Mat4.makeLookAt cameraPos (vec3 0 0 0) (vec3 0 1 0)
+    Mat4.makeLookAt cameraPos (vec3 2 0 2) (vec3 0 1 0)
 
 
 uniforms : Uniforms
@@ -161,39 +163,168 @@ attributes p1 p2 p3 =
         ( Vertex p1 normal, Vertex p2 normal, Vertex p3 normal )
 
 
+type alias Cube =
+    { x : Int
+    , y : Int
+    , z : Int
+    }
+
+
+oddrToCube : Position -> Cube
+oddrToCube pos =
+    let
+        x =
+            (toFloat pos.x) - (toFloat (pos.y - (pos.y % 2))) / 2
+
+        z =
+            pos.y
+
+        y =
+            -x - (toFloat z)
+    in
+        Cube (floor x) (floor y) z
+
+
+cubeToOddr : Cube -> Position
+cubeToOddr cube =
+    let
+        x =
+            (toFloat cube.x) + (toFloat (cube.z - (cube.z % 2))) / 2
+
+        y =
+            cube.z
+    in
+        Position (floor x) y
+
+
+eastCube : Cube -> Cube
+eastCube { x, y, z } =
+    Cube (x + 1) (y - 1) z
+
+
+northEastCube : Cube -> Cube
+northEastCube { x, y, z } =
+    Cube (x + 1) y (z - 1)
+
+
+southEastCube : Cube -> Cube
+southEastCube { x, y, z } =
+    Cube x (y - 1) (z + 1)
+
+
+westCube : Cube -> Cube
+westCube { x, y, z } =
+    Cube (x - 1) (y + 1) z
+
+
+northWestCube : Cube -> Cube
+northWestCube { x, y, z } =
+    Cube x (y + 1) (z - 1)
+
+
+southWestCube : Cube -> Cube
+southWestCube { x, y, z } =
+    Cube (x - 1) y (z + 1)
+
+
+getPositionOfNeighbour : Position -> (Cube -> Cube) -> Position
+getPositionOfNeighbour pos neighbour =
+    oddrToCube pos
+        |> neighbour
+        |> cubeToOddr
+
+
+getHeightFromPos : Array Float -> Position -> Float
+getHeightFromPos grid pos =
+    Array.get (pos.y * 3 + pos.x) grid
+        |> Maybe.withDefault 0
+
+
 
 -- Mesh
 
 
-hex : Position -> Mesh Vertex
-hex { x, y } =
+hex : Array Float -> Int -> Mesh Vertex
+hex gridHeight i =
     let
+        x =
+            rem i 3
+
+        y =
+            i // 3
+
+        translatedX =
+            vec3 ((toFloat x) * 2) 0 0
+
+        translatedY =
+            vec3
+                (if rem y 2 == 0 then
+                    0
+                 else
+                    1
+                )
+                0
+                ((toFloat y) * 1.5)
+
+        translatedXY =
+            Vec3.add translatedX translatedY
+
         width =
             10
 
         height =
-            0.8
+            Maybe.withDefault 0 (Array.get i gridHeight)
+
+        getNeighbour =
+            getPositionOfNeighbour (Position x y)
+
+        getHeight =
+            getHeightFromPos gridHeight
+
+        heightEast =
+            getNeighbour eastCube
+                |> getHeight
+
+        heightNorthEast =
+            getNeighbour northEastCube
+                |> getHeight
+
+        heightSouthEast =
+            getNeighbour southEastCube
+                |> getHeight
+
+        heightSouthWest =
+            getNeighbour southWestCube
+                |> getHeight
+
+        heightWest =
+            getNeighbour westCube
+                |> getHeight
+
+        heightNorthWest =
+            getNeighbour northWestCube
+                |> getHeight
 
         p0 =
-            vec3 -1 0 -0.5
+            Vec3.add translatedXY (vec3 -1 ((height + heightWest + heightNorthWest) / 3) -0.5)
 
         p1 =
-            vec3 -1 0 0.5
+            Vec3.add translatedXY (vec3 -1 ((height + heightSouthWest + heightWest) / 3) 0.5)
 
         p2 =
-            vec3 0 0 1
+            Vec3.add translatedXY (vec3 0 ((height + heightSouthWest + heightSouthEast) / 3) 1)
 
         p3 =
-            vec3 1 0 0.5
+            Vec3.add translatedXY (vec3 1 ((height + heightEast + heightSouthEast) / 3) 0.5)
 
         p4 =
-            vec3 1 0 -0.5
+            Vec3.add translatedXY (vec3 1 ((height + heightEast + heightNorthEast) / 3) -0.5)
 
         p5 =
-            vec3 0 0 -1
+            Vec3.add translatedXY (vec3 0 ((height + heightNorthWest + heightNorthEast) / 3) -1)
 
         p6 =
-            vec3 0 height 0
+            Vec3.add translatedXY (vec3 0 height 0)
     in
         [ attributes p0 p6 p1
         , attributes p1 p6 p2
