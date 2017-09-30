@@ -10,16 +10,21 @@ import WebGL exposing (Mesh, Shader)
 import Time exposing (Time)
 import Task
 import Array exposing (Array)
+import Keyboard
+import Random exposing (Generator, list, float)
+import Noise
 
 
 ---- MODEL ----
 
 
 type alias Model =
-    { theta : Float
-    , grid : List (Mesh Vertex)
+    { chunks : Array (Array Chunk)
     , lastDelta : Float
     , gridHeight : Array Float
+    , camOffset : Vec3
+    , seed : Random.Seed
+    , table : Noise.PermutationTable
     }
 
 
@@ -38,16 +43,58 @@ type alias Uniforms =
     }
 
 
+type alias Chunk =
+    { gridHeight : Array Float
+    , mesh : Mesh Vertex
+    , position : Position
+    }
+
+
+seed =
+    Random.initialSeed 1
+
+
+floatList : Generator (List (List Float))
+floatList =
+    list 10 <| list 10 (float 0 1)
+
+
+chunkWidth : Int
+chunkWidth =
+    8
+
+
 init : ( Model, Cmd Msg )
 init =
     let
+        getNoise table i =
+            let
+                x =
+                    rem i chunkWidth
+
+                y =
+                    i // chunkWidth
+            in
+                (Noise.noise2d table (toFloat x) (toFloat y)) * 4
+
+        ( table, _ ) =
+            Noise.permutationTable seed
+
         gridHeight =
-            Array.fromList [ 0, 0.1, 0.3, 0.5, 0.7, 1.1, 0, 1.3, 1.7, 0, 0 ]
+            List.range 0 100 |> List.map (getNoise table) |> Array.fromList
+
+        chunk =
+            { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
+            , gridHeight = gridHeight
+            , position = Position 0 0
+            }
     in
-        ( { theta = 0
-          , grid = List.range 0 10 |> List.map (hex gridHeight)
+        ( { chunks = Array.fromList [ Array.fromList [ chunk ] ]
           , lastDelta = 0
           , gridHeight = gridHeight
+          , camOffset = vec3 0 0 0
+          , seed = seed
+          , table = table
           }
         , Cmd.batch [ send (DeltaTime (Time.inMilliseconds 0)) ]
         )
@@ -69,6 +116,7 @@ send msg =
 
 type Msg
     = DeltaTime Time
+    | KeyMsg Keyboard.KeyCode
 
 
 type alias Position =
@@ -82,6 +130,71 @@ update msg model =
     case msg of
         DeltaTime time ->
             ( { model | lastDelta = time }, Cmd.none )
+
+        KeyMsg code ->
+            let
+                newOffset camOffset =
+                    ( { model | camOffset = camOffset }, Cmd.none )
+            in
+                case code of
+                    37 ->
+                        newOffset (Vec3.add model.camOffset (vec3 -1 0 0))
+
+                    38 ->
+                        newOffset (Vec3.add model.camOffset (vec3 0 0 -1))
+
+                    39 ->
+                        newOffset (Vec3.add model.camOffset (vec3 1 0 0))
+
+                    40 ->
+                        newOffset (Vec3.add model.camOffset (vec3 0 0 1))
+
+                    32 ->
+                        let
+                            newChunks =
+                                case Array.get 0 model.chunks of
+                                    Just chunks ->
+                                        let
+                                            newChunk =
+                                                getNewChunk model
+                                        in
+                                            Array.push newChunk chunks
+
+                                    Nothing ->
+                                        Array.empty
+
+                            setChunks =
+                                Array.set 0 newChunks model.chunks
+                        in
+                            ( { model | chunks = setChunks }, Cmd.none )
+
+                    _ ->
+                        ( model, Cmd.none )
+
+
+getNewChunk : Model -> Chunk
+getNewChunk model =
+    let
+        getNoise table offset i =
+            let
+                x =
+                    rem i (chunkWidth * (offset + 1))
+
+                y =
+                    i // (chunkWidth * (offset + 1))
+            in
+                (Noise.noise2d table (toFloat x) (toFloat y)) * 4
+
+        gridHeight =
+            List.range 0 100 |> List.map (getNoise model.table 1) |> Array.fromList
+
+        chunk =
+            { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
+            , gridHeight = gridHeight
+            , position = Position 0 0
+            }
+    in
+        chunk
 
 
 
@@ -101,7 +214,9 @@ main =
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Sub.batch
-        [ AnimationFrame.diffs DeltaTime ]
+        [ AnimationFrame.diffs DeltaTime
+        , Keyboard.downs KeyMsg
+        ]
 
 
 
@@ -110,21 +225,38 @@ subscriptions model =
 
 view : Model -> Html Msg
 view model =
-    WebGL.toHtml
-        [ Html.Attributes.width 1000
-        , Html.Attributes.height 1000
-        , Html.Attributes.style [ ( "display", "block" ) ]
-        ]
-        (List.map hexView model.grid)
+    let
+        defaultChunk =
+            (Chunk (Array.empty) (WebGL.triangles []) (Position 0 0))
+
+        chunk =
+            case Array.get 0 model.chunks of
+                Just chunks ->
+                    case Array.get 0 chunks of
+                        Just chunk ->
+                            chunk
+
+                        Nothing ->
+                            defaultChunk
+
+                Nothing ->
+                    defaultChunk
+    in
+        WebGL.toHtml
+            [ Html.Attributes.width 1000
+            , Html.Attributes.height 1000
+            , Html.Attributes.style [ ( "display", "block" ) ]
+            ]
+            [ (hexView model.camOffset chunk.mesh) ]
 
 
-hexView : Mesh Vertex -> WebGL.Entity
-hexView hex2 =
+hexView : Vec3 -> Mesh Vertex -> WebGL.Entity
+hexView camOffset hex2 =
     WebGL.entity
         vertexShader
         fragmentShader
         hex2
-        uniforms
+        (uniforms camOffset)
 
 
 perspective : Mat4
@@ -132,21 +264,20 @@ perspective =
     Mat4.makePerspective 45 1 0.01 50
 
 
-cameraPos : Vec3
-cameraPos =
-    vec3 2 8 5
+initialPos =
+    vec3 2 18 5
 
 
-camera : Mat4
-camera =
-    Mat4.makeLookAt cameraPos (vec3 2 0 2) (vec3 0 1 0)
+camera : Vec3 -> Mat4
+camera camOffset =
+    Mat4.makeLookAt (Vec3.add camOffset initialPos) (Vec3.add camOffset (vec3 2 0 3)) (vec3 0 1 0)
 
 
-uniforms : Uniforms
-uniforms =
+uniforms : Vec3 -> Uniforms
+uniforms camOffset =
     { rotation = Mat4.identity
     , perspective = perspective
-    , camera = camera
+    , camera = camera camOffset
     , color = vec3 0.4 0.4 0.4
     , light = light
     }
@@ -236,7 +367,7 @@ getPositionOfNeighbour pos neighbour =
 
 getHeightFromPos : Array Float -> Position -> Float
 getHeightFromPos grid pos =
-    Array.get (pos.y * 3 + pos.x) grid
+    Array.get (pos.y * chunkWidth + pos.x + chunkWidth + 1) grid
         |> Maybe.withDefault 0
 
 
@@ -244,14 +375,14 @@ getHeightFromPos grid pos =
 -- Mesh
 
 
-hex : Array Float -> Int -> Mesh Vertex
+hex : Array Float -> Int -> List ( Vertex, Vertex, Vertex )
 hex gridHeight i =
     let
         x =
-            rem i 3
+            rem i chunkWidth
 
         y =
-            i // 3
+            i // chunkWidth
 
         translatedX =
             vec3 ((toFloat x) * 2) 0 0
@@ -273,7 +404,7 @@ hex gridHeight i =
             10
 
         height =
-            Maybe.withDefault 0 (Array.get i gridHeight)
+            Maybe.withDefault 0 (Array.get (i + chunkWidth + 1) gridHeight)
 
         getNeighbour =
             getPositionOfNeighbour (Position x y)
@@ -333,7 +464,6 @@ hex gridHeight i =
         , attributes p4 p6 p5
         , attributes p5 p6 p0
         ]
-            |> WebGL.triangles
 
 
 light : Vec3
