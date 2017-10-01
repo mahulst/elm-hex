@@ -21,7 +21,6 @@ import Noise
 type alias Model =
     { chunks : Array (Array Chunk)
     , lastDelta : Float
-    , gridHeight : Array Float
     , camOffset : Vec3
     , seed : Random.Seed
     , table : Noise.PermutationTable
@@ -44,8 +43,7 @@ type alias Uniforms =
 
 
 type alias Chunk =
-    { gridHeight : Array Float
-    , mesh : Mesh Vertex
+    { mesh : Mesh Vertex
     , position : Position
     }
 
@@ -85,13 +83,11 @@ init =
 
         chunk =
             { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
-            , gridHeight = gridHeight
             , position = Position 0 0
             }
     in
         ( { chunks = Array.fromList [ Array.fromList [ chunk ] ]
           , lastDelta = 0
-          , gridHeight = gridHeight
           , camOffset = vec3 0 0 0
           , seed = seed
           , table = table
@@ -190,7 +186,6 @@ getNewChunk model =
 
         chunk =
             { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
-            , gridHeight = gridHeight
             , position = Position 0 0
             }
     in
@@ -227,7 +222,7 @@ view : Model -> Html Msg
 view model =
     let
         defaultChunk =
-            (Chunk (Array.empty) (WebGL.triangles []) (Position 0 0))
+            (Chunk (WebGL.triangles []) (Position 0 0))
 
         chunk =
             case Array.get 0 model.chunks of
@@ -242,12 +237,16 @@ view model =
                 Nothing ->
                     defaultChunk
     in
-        WebGL.toHtml
-            [ Html.Attributes.width 1000
-            , Html.Attributes.height 1000
-            , Html.Attributes.style [ ( "display", "block" ) ]
+        Html.div []
+            [ Html.div []
+                [ Html.text (toString (model.lastDelta)) ]
+            , WebGL.toHtml
+                [ Html.Attributes.width 1000
+                , Html.Attributes.height 1000
+                , Html.Attributes.style [ ( "display", "block" ) ]
+                ]
+                [ (hexView model.camOffset chunk.mesh) ]
             ]
-            [ (hexView model.camOffset chunk.mesh) ]
 
 
 hexView : Vec3 -> Mesh Vertex -> WebGL.Entity
