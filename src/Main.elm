@@ -43,7 +43,7 @@ type alias Uniforms =
 
 
 type alias Chunk =
-    { mesh : Mesh Vertex
+    { mesh : () -> Mesh Vertex
     , position : Position
     }
 
@@ -65,26 +65,11 @@ chunkWidth =
 init : ( Model, Cmd Msg )
 init =
     let
-        getNoise table i =
-            let
-                x =
-                    rem i chunkWidth
-
-                y =
-                    i // chunkWidth
-            in
-                (Noise.noise2d table (toFloat x) (toFloat y)) * 4
-
         ( table, _ ) =
             Noise.permutationTable seed
 
-        gridHeight =
-            List.range 0 100 |> List.map (getNoise table) |> Array.fromList
-
         chunk =
-            { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
-            , position = Position 0 0
-            }
+            getNewChunk table (Position 0 0)
     in
         ( { chunks = Array.fromList [ Array.fromList [ chunk ] ]
           , lastDelta = 0
@@ -94,6 +79,32 @@ init =
           }
         , Cmd.batch [ send (DeltaTime (Time.inMilliseconds 0)) ]
         )
+
+
+getNewChunk : Noise.PermutationTable -> Position -> Chunk
+getNewChunk table worldPosition =
+    let
+        getNoise : Noise.PermutationTable -> Position -> Position -> Float
+        getNoise table offset pos =
+            (Noise.noise2d table (toFloat (offset.x * chunkWidth + pos.x)) (toFloat (offset.y * chunkWidth + pos.y))) * 4
+
+        gridHeight : Array (Array Float)
+        gridHeight =
+            List.range -1 chunkWidth
+                |> List.map
+                    (\x ->
+                        List.range -1 chunkWidth
+                            |> List.map (\y -> (getNoise table worldPosition (Position x y)))
+                            |> Array.fromList
+                    )
+                |> Array.fromList
+
+        chunk =
+            { mesh = always (hex2 gridHeight)
+            , position = worldPosition
+            }
+    in
+        chunk
 
 
 
@@ -152,7 +163,7 @@ update msg model =
                                     Just chunks ->
                                         let
                                             newChunk =
-                                                getNewChunk model
+                                                getNewChunk model.table (Position 1 0)
                                         in
                                             Array.push newChunk chunks
 
@@ -166,30 +177,6 @@ update msg model =
 
                     _ ->
                         ( model, Cmd.none )
-
-
-getNewChunk : Model -> Chunk
-getNewChunk model =
-    let
-        getNoise table offset i =
-            let
-                x =
-                    rem i (chunkWidth * (offset + 1))
-
-                y =
-                    i // (chunkWidth * (offset + 1))
-            in
-                (Noise.noise2d table (toFloat x) (toFloat y)) * 4
-
-        gridHeight =
-            List.range 0 100 |> List.map (getNoise model.table 1) |> Array.fromList
-
-        chunk =
-            { mesh = List.range 0 63 |> List.map (hex gridHeight) |> List.concat |> WebGL.triangles
-            , position = Position 0 0
-            }
-    in
-        chunk
 
 
 
@@ -222,7 +209,7 @@ view : Model -> Html Msg
 view model =
     let
         defaultChunk =
-            (Chunk (WebGL.triangles []) (Position 0 0))
+            (Chunk (always (WebGL.triangles [])) (Position 0 0))
 
         chunk =
             case Array.get 0 model.chunks of
@@ -236,26 +223,32 @@ view model =
 
                 Nothing ->
                     defaultChunk
+
+        chunks : List Chunk
+        chunks =
+            Array.toList model.chunks
+                |> List.map (\chunks -> Array.toList chunks |> List.map (\chunk -> chunk))
+                |> List.concat
     in
         Html.div []
             [ Html.div []
-                [ Html.text (toString (model.lastDelta)) ]
+                [ Html.text (toString (round (1000 / model.lastDelta))) ]
             , WebGL.toHtml
                 [ Html.Attributes.width 1000
                 , Html.Attributes.height 1000
                 , Html.Attributes.style [ ( "display", "block" ) ]
                 ]
-                [ (hexView model.camOffset chunk.mesh) ]
+                (List.map (hexView model.camOffset) chunks)
             ]
 
 
-hexView : Vec3 -> Mesh Vertex -> WebGL.Entity
-hexView camOffset hex2 =
+hexView : Vec3 -> Chunk -> WebGL.Entity
+hexView camOffset chunk =
     WebGL.entity
         vertexShader
         fragmentShader
-        hex2
-        (uniforms camOffset)
+        (chunk.mesh ())
+        (uniforms camOffset chunk.position)
 
 
 perspective : Mat4
@@ -272,12 +265,12 @@ camera camOffset =
     Mat4.makeLookAt (Vec3.add camOffset initialPos) (Vec3.add camOffset (vec3 2 0 3)) (vec3 0 1 0)
 
 
-uniforms : Vec3 -> Uniforms
-uniforms camOffset =
-    { rotation = Mat4.identity
+uniforms : Vec3 -> Position -> Uniforms
+uniforms camOffset position =
+    { rotation = Mat4.translate (vec3 (toFloat position.x * 16) 0 (toFloat position.y * 12)) Mat4.identity
     , perspective = perspective
     , camera = camera camOffset
-    , color = vec3 0.4 0.4 0.4
+    , color = vec3 0.1 0.25 0.08
     , light = light
     }
 
@@ -364,25 +357,39 @@ getPositionOfNeighbour pos neighbour =
         |> cubeToOddr
 
 
-getHeightFromPos : Array Float -> Position -> Float
+getHeightFromPos : Array (Array Float) -> Position -> Float
 getHeightFromPos grid pos =
-    Array.get (pos.y * chunkWidth + pos.x + chunkWidth + 1) grid
-        |> Maybe.withDefault 0
+    Array.get pos.x grid |> Maybe.andThen (Array.get pos.y) |> Maybe.withDefault 100
 
 
 
 -- Mesh
 
 
-hex : Array Float -> Int -> List ( Vertex, Vertex, Vertex )
-hex gridHeight i =
+hex2 : Array (Array Float) -> Mesh Vertex
+hex2 gridHeight =
     let
-        x =
-            rem i chunkWidth
+        fn1 : Int -> Array Float -> List (List ( Vertex, Vertex, Vertex ))
+        fn1 x row =
+            Array.slice 1 ((Array.length row) - 1) row
+                |> Array.indexedMap (fn2 x)
+                |> Array.toList
 
-        y =
-            i // chunkWidth
+        fn2 : Int -> Int -> Float -> List ( Vertex, Vertex, Vertex )
+        fn2 x y height =
+            hex gridHeight (Position (x + 1) (y + 1))
+    in
+        Array.slice 1 ((Array.length gridHeight) - 1) gridHeight
+            |> Array.indexedMap fn1
+            |> Array.toList
+            |> List.concat
+            |> List.concat
+            |> WebGL.triangles
 
+
+hex : Array (Array Float) -> Position -> List ( Vertex, Vertex, Vertex )
+hex gridHeight { x, y } =
+    let
         translatedX =
             vec3 ((toFloat x) * 2) 0 0
 
@@ -402,8 +409,9 @@ hex gridHeight i =
         width =
             10
 
+        height : Float
         height =
-            Maybe.withDefault 0 (Array.get (i + chunkWidth + 1) gridHeight)
+            Array.get x gridHeight |> Maybe.andThen (Array.get y) |> Maybe.withDefault 0
 
         getNeighbour =
             getPositionOfNeighbour (Position x y)
