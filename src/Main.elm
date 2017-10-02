@@ -13,13 +13,14 @@ import Array exposing (Array)
 import Keyboard
 import Random exposing (Generator, list, float)
 import Noise
+import Dict exposing (Dict)
 
 
 ---- MODEL ----
 
 
 type alias Model =
-    { chunks : Array (Array Chunk)
+    { chunks : Dict Int (Dict Int Chunk)
     , lastDelta : Float
     , camOffset : Vec3
     , seed : Random.Seed
@@ -71,7 +72,7 @@ init =
         chunk =
             getNewChunk table (Position 0 0)
     in
-        ( { chunks = Array.fromList [ Array.fromList [ chunk ] ]
+        ( { chunks = Dict.fromList [ ( 0, Dict.fromList [ ( 0, chunk ) ] ) ]
           , lastDelta = 0
           , camOffset = vec3 0 0 0
           , seed = seed
@@ -141,7 +142,47 @@ update msg model =
         KeyMsg code ->
             let
                 newOffset camOffset =
-                    ( { model | camOffset = camOffset }, Cmd.none )
+                    let
+                        position =
+                            Debug.log "point closest to camera: "
+                                (findClosestPoint model.camOffset)
+
+                        chunks =
+                            case Dict.get position.x model.chunks of
+                                Just row ->
+                                    case Dict.get position.y row of
+                                        Just chunk ->
+                                            Debug.log "No chunk changed"
+                                                model.chunks
+
+                                        Nothing ->
+                                            let
+                                                chunk =
+                                                    getNewChunk model.table position
+
+                                                newRow =
+                                                    Dict.insert position.y chunk row
+                                            in
+                                                Debug.log "y changed"
+                                                    Dict.insert
+                                                    position.x
+                                                    newRow
+                                                    model.chunks
+
+                                Nothing ->
+                                    let
+                                        chunk =
+                                            Debug.log "x changed"
+                                                getNewChunk
+                                                model.table
+                                                position
+
+                                        row =
+                                            Dict.insert position.y chunk Dict.empty
+                                    in
+                                        Dict.insert position.x row model.chunks
+                    in
+                        ( { model | camOffset = camOffset, chunks = chunks }, Cmd.none )
             in
                 case code of
                     37 ->
@@ -159,24 +200,29 @@ update msg model =
                     32 ->
                         let
                             newChunks =
-                                case Array.get 0 model.chunks of
+                                case Dict.get 0 model.chunks of
                                     Just chunks ->
                                         let
                                             newChunk =
                                                 getNewChunk model.table (Position 1 0)
                                         in
-                                            Array.push newChunk chunks
+                                            Dict.insert 0 newChunk chunks
 
                                     Nothing ->
-                                        Array.empty
+                                        Dict.empty
 
                             setChunks =
-                                Array.set 0 newChunks model.chunks
+                                Dict.insert 1 newChunks model.chunks
                         in
                             ( { model | chunks = setChunks }, Cmd.none )
 
                     _ ->
                         ( model, Cmd.none )
+
+
+findClosestPoint : Vec3 -> Position
+findClosestPoint pos =
+    Position (round ((Vec3.getX pos) / (toFloat chunkWidth))) (round ((Vec3.getZ pos) / (toFloat chunkWidth)))
 
 
 
@@ -212,9 +258,9 @@ view model =
             (Chunk (always (WebGL.triangles [])) (Position 0 0))
 
         chunk =
-            case Array.get 0 model.chunks of
+            case Dict.get 0 model.chunks of
                 Just chunks ->
-                    case Array.get 0 chunks of
+                    case Dict.get 0 chunks of
                         Just chunk ->
                             chunk
 
@@ -226,8 +272,8 @@ view model =
 
         chunks : List Chunk
         chunks =
-            Array.toList model.chunks
-                |> List.map (\chunks -> Array.toList chunks |> List.map (\chunk -> chunk))
+            Dict.toList model.chunks
+                |> List.map (\( _, chunks ) -> Dict.toList chunks |> List.map (\( _, chunk ) -> chunk))
                 |> List.concat
     in
         Html.div []
@@ -238,7 +284,9 @@ view model =
                 , Html.Attributes.height 1000
                 , Html.Attributes.style [ ( "display", "block" ) ]
                 ]
-                ((List.map (hexView model.camOffset) chunks) ++ ([waterView model.camOffset]))
+                ((List.map (hexView model.camOffset) chunks))
+
+            --++ ([ waterView model.camOffset ]))
             ]
 
 
@@ -249,6 +297,7 @@ hexView camOffset chunk =
         fragmentShader
         (chunk.mesh ())
         (uniforms camOffset chunk.position)
+
 
 waterView : Vec3 -> WebGL.Entity
 waterView camOffset =
@@ -261,16 +310,24 @@ waterView camOffset =
 
 waterMesh : Mesh Vertex
 waterMesh =
-  let
-    bl = vec3 -1000 -0.6 1000
-    tr = vec3 1000 -0.6 -1000
-    tl = vec3 -1000 -0.6 -1000
-    br = vec3 1000 -0.6 1000
-  in
-    [ attributes bl tr tl
-    , attributes bl br tr
-    ]
-       |> WebGL.triangles
+    let
+        bl =
+            vec3 -1000 -0.6 1000
+
+        tr =
+            vec3 1000 -0.6 -1000
+
+        tl =
+            vec3 -1000 -0.6 -1000
+
+        br =
+            vec3 1000 -0.6 1000
+    in
+        [ attributes bl tr tl
+        , attributes bl br tr
+        ]
+            |> WebGL.triangles
+
 
 waterUniforms : Vec3 -> Uniforms
 waterUniforms camOffset =
@@ -281,13 +338,14 @@ waterUniforms camOffset =
     , light = light
     }
 
+
 perspective : Mat4
 perspective =
-    Mat4.makePerspective 45 1 0.01 50
+    Mat4.makePerspective 45 1 0.01 100
 
 
 initialPos =
-    vec3 2 18 5
+    vec3 2 80 5
 
 
 camera : Vec3 -> Mat4
