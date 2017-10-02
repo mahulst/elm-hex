@@ -238,7 +238,7 @@ view model =
                 , Html.Attributes.height 1000
                 , Html.Attributes.style [ ( "display", "block" ) ]
                 ]
-                (List.map (hexView model.camOffset) chunks)
+                ((List.map (hexView model.camOffset) chunks) ++ ([waterView model.camOffset]))
             ]
 
 
@@ -250,6 +250,36 @@ hexView camOffset chunk =
         (chunk.mesh ())
         (uniforms camOffset chunk.position)
 
+waterView : Vec3 -> WebGL.Entity
+waterView camOffset =
+    WebGL.entity
+        vertexShader
+        fragmentShader
+        waterMesh
+        (waterUniforms camOffset)
+
+
+waterMesh : Mesh Vertex
+waterMesh =
+  let
+    bl = vec3 -1000 -0.6 1000
+    tr = vec3 1000 -0.6 -1000
+    tl = vec3 -1000 -0.6 -1000
+    br = vec3 1000 -0.6 1000
+  in
+    [ attributes bl tr tl
+    , attributes bl br tr
+    ]
+       |> WebGL.triangles
+
+waterUniforms : Vec3 -> Uniforms
+waterUniforms camOffset =
+    { rotation = Mat4.identity
+    , perspective = perspective
+    , camera = camera camOffset
+    , color = vec3 0.1 0.25 0.8
+    , light = light
+    }
 
 perspective : Mat4
 perspective =
