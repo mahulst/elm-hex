@@ -60,7 +60,7 @@ floatList =
 
 chunkWidth : Int
 chunkWidth =
-    8
+    32
 
 
 init : ( Model, Cmd Msg )
@@ -69,10 +69,10 @@ init =
         ( table, _ ) =
             Noise.permutationTable seed
 
-        chunk =
-            getNewChunk table (Position 0 0)
+        chunks =
+            insertMultipleChunks table (Position 0 0) 0 Dict.empty
     in
-        ( { chunks = Dict.fromList [ ( 0, Dict.fromList [ ( 0, chunk ) ] ) ]
+        ( { chunks = chunks
           , lastDelta = 0
           , camOffset = vec3 0 0 0
           , seed = seed
@@ -133,6 +133,58 @@ type alias Position =
     }
 
 
+insertMultipleChunks : Noise.PermutationTable -> Position -> Int -> Dict Int (Dict Int Chunk) -> Dict Int (Dict Int Chunk)
+insertMultipleChunks table pos range chunks =
+    let
+        insert =
+            insertNewChunk table
+    in
+        chunks
+            |> (insert (Position (pos.x - 1) (pos.y - 1)))
+            |> (insert (Position (pos.x) (pos.y - 1)))
+            |> (insert (Position (pos.x + 1) (pos.y - 1)))
+            |> (insert (Position (pos.x - 1) (pos.y)))
+            |> (insert (Position (pos.x) (pos.y)))
+            |> (insert (Position (pos.x + 1) (pos.y)))
+            |> (insert (Position (pos.x - 1) (pos.y + 1)))
+            |> (insert (Position (pos.x) (pos.y + 1)))
+            |> (insert (Position (pos.x + 1) (pos.y + 1)))
+
+
+insertNewChunk : Noise.PermutationTable -> Position -> Dict Int (Dict Int Chunk) -> Dict Int (Dict Int Chunk)
+insertNewChunk table pos chunks =
+    case Dict.get pos.x chunks of
+        Just row ->
+            case Dict.get pos.y row of
+                Just chunk ->
+                    chunks
+
+                Nothing ->
+                    let
+                        chunk =
+                            getNewChunk table pos
+
+                        newRow =
+                            Dict.insert pos.y chunk row
+                    in
+                        Dict.insert
+                            pos.x
+                            newRow
+                            chunks
+
+        Nothing ->
+            let
+                chunk =
+                    getNewChunk
+                        table
+                        pos
+
+                row =
+                    Dict.insert pos.y chunk Dict.empty
+            in
+                Dict.insert pos.x row chunks
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -144,58 +196,25 @@ update msg model =
                 newOffset camOffset =
                     let
                         position =
-                            Debug.log "point closest to camera: "
-                                (findClosestPoint model.camOffset)
+                            (findClosestPoint model.camOffset)
 
                         chunks =
-                            case Dict.get position.x model.chunks of
-                                Just row ->
-                                    case Dict.get position.y row of
-                                        Just chunk ->
-                                            Debug.log "No chunk changed"
-                                                model.chunks
-
-                                        Nothing ->
-                                            let
-                                                chunk =
-                                                    getNewChunk model.table position
-
-                                                newRow =
-                                                    Dict.insert position.y chunk row
-                                            in
-                                                Debug.log "y changed"
-                                                    Dict.insert
-                                                    position.x
-                                                    newRow
-                                                    model.chunks
-
-                                Nothing ->
-                                    let
-                                        chunk =
-                                            Debug.log "x changed"
-                                                getNewChunk
-                                                model.table
-                                                position
-
-                                        row =
-                                            Dict.insert position.y chunk Dict.empty
-                                    in
-                                        Dict.insert position.x row model.chunks
+                            insertMultipleChunks model.table position 0 model.chunks
                     in
                         ( { model | camOffset = camOffset, chunks = chunks }, Cmd.none )
             in
                 case code of
                     37 ->
-                        newOffset (Vec3.add model.camOffset (vec3 -1 0 0))
+                        newOffset (Vec3.add model.camOffset (vec3 -10 0 0))
 
                     38 ->
-                        newOffset (Vec3.add model.camOffset (vec3 0 0 -1))
+                        newOffset (Vec3.add model.camOffset (vec3 0 0 -10))
 
                     39 ->
-                        newOffset (Vec3.add model.camOffset (vec3 1 0 0))
+                        newOffset (Vec3.add model.camOffset (vec3 10 0 0))
 
                     40 ->
-                        newOffset (Vec3.add model.camOffset (vec3 0 0 1))
+                        newOffset (Vec3.add model.camOffset (vec3 0 0 10))
 
                     32 ->
                         let
@@ -222,7 +241,23 @@ update msg model =
 
 findClosestPoint : Vec3 -> Position
 findClosestPoint pos =
-    Position (round ((Vec3.getX pos) / (toFloat chunkWidth))) (round ((Vec3.getZ pos) / (toFloat chunkWidth)))
+    let
+        x =
+            Vec3.getX pos
+
+        y =
+            Vec3.getZ pos
+
+        floatChunkWidth =
+            toFloat chunkWidth
+
+        x2 =
+            x / floatChunkWidth / 2
+
+        y2 =
+            y / floatChunkWidth / 1.5
+    in
+        Position (round x2) (round y2)
 
 
 
@@ -284,9 +319,9 @@ view model =
                 , Html.Attributes.height 1000
                 , Html.Attributes.style [ ( "display", "block" ) ]
                 ]
-                ((List.map (hexView model.camOffset) chunks))
-
-            --++ ([ waterView model.camOffset ]))
+                ((List.map (hexView model.camOffset) chunks)
+                    ++ [ (waterView model.camOffset) ]
+                )
             ]
 
 
@@ -308,17 +343,22 @@ waterView camOffset =
         (waterUniforms camOffset)
 
 
+waterHeight : Float
+waterHeight =
+    0
+
+
 waterMesh : Mesh Vertex
 waterMesh =
     let
         bl =
-            vec3 -1000 -0.6 1000
+            vec3 -1000 waterHeight 1000
 
         tr =
-            vec3 1000 -0.6 -1000
+            vec3 1000 waterHeight -1000
 
         tl =
-            vec3 -1000 -0.6 -1000
+            vec3 -1000 waterHeight -1000
 
         br =
             vec3 1000 -0.6 1000
@@ -355,12 +395,17 @@ camera camOffset =
 
 uniforms : Vec3 -> Position -> Uniforms
 uniforms camOffset position =
-    { rotation = Mat4.translate (vec3 (toFloat position.x * 16) 0 (toFloat position.y * 12)) Mat4.identity
+    { rotation = Mat4.translate (getChunkOffset position) Mat4.identity
     , perspective = perspective
     , camera = camera camOffset
     , color = vec3 0.1 0.25 0.08
     , light = light
     }
+
+
+getChunkOffset : Position -> Vec3
+getChunkOffset pos =
+    vec3 (toFloat pos.x * ((toFloat chunkWidth) * 2)) 0 (toFloat pos.y * ((toFloat chunkWidth) * 1.5))
 
 
 {-| Adds a normal to the vertex
@@ -497,9 +542,12 @@ hex gridHeight { x, y } =
         width =
             10
 
+        getAverageHeight h1 h2 h3 =
+            (h1 + h2 + h3) / 3
+
         height : Float
         height =
-            Array.get x gridHeight |> Maybe.andThen (Array.get y) |> Maybe.withDefault 0
+            getHeightFromPos gridHeight (Position x y)
 
         getNeighbour =
             getPositionOfNeighbour (Position x y)
@@ -532,22 +580,22 @@ hex gridHeight { x, y } =
                 |> getHeight
 
         p0 =
-            Vec3.add translatedXY (vec3 -1 ((height + heightWest + heightNorthWest) / 3) -0.5)
+            Vec3.add translatedXY (vec3 -1 (getAverageHeight height heightWest heightNorthWest) -0.5)
 
         p1 =
-            Vec3.add translatedXY (vec3 -1 ((height + heightSouthWest + heightWest) / 3) 0.5)
+            Vec3.add translatedXY (vec3 -1 (getAverageHeight height heightSouthWest heightWest) 0.5)
 
         p2 =
-            Vec3.add translatedXY (vec3 0 ((height + heightSouthWest + heightSouthEast) / 3) 1)
+            Vec3.add translatedXY (vec3 0 (getAverageHeight height heightSouthWest heightSouthEast) 1)
 
         p3 =
-            Vec3.add translatedXY (vec3 1 ((height + heightEast + heightSouthEast) / 3) 0.5)
+            Vec3.add translatedXY (vec3 1 (getAverageHeight height heightEast heightSouthEast) 0.5)
 
         p4 =
-            Vec3.add translatedXY (vec3 1 ((height + heightEast + heightNorthEast) / 3) -0.5)
+            Vec3.add translatedXY (vec3 1 (getAverageHeight height heightEast heightNorthEast) -0.5)
 
         p5 =
-            Vec3.add translatedXY (vec3 0 ((height + heightNorthWest + heightNorthEast) / 3) -1)
+            Vec3.add translatedXY (vec3 0 (getAverageHeight height heightNorthWest heightNorthEast) -1)
 
         p6 =
             Vec3.add translatedXY (vec3 0 height 0)
