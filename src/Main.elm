@@ -13,6 +13,7 @@ import Array exposing (Array)
 import Keyboard
 import Random exposing (Generator, list, float)
 import Noise
+import Noisier
 import Dict exposing (Dict)
 
 
@@ -87,7 +88,22 @@ getNewChunk table worldPosition =
     let
         getNoise : Noise.PermutationTable -> Position -> Position -> Float
         getNoise table offset pos =
-            (Noise.noise2d table (toFloat (offset.x * chunkWidth + pos.x)) (toFloat (offset.y * chunkWidth + pos.y))) * 4
+            let
+                x =
+                    (offset.x * chunkWidth + pos.x)
+
+                y =
+                    (offset.y * chunkWidth + pos.y)
+
+                rec =
+                    { maxAmplitude = 0
+                    , amplitude = 40
+                    , noise = 0
+                    , frequency = 4
+                    , iteration = 0
+                    }
+            in
+                (Noisier.scaled2D table rec x y) * 24
 
         gridHeight : Array (Array Float)
         gridHeight =
@@ -345,23 +361,23 @@ waterView camOffset =
 
 waterHeight : Float
 waterHeight =
-    0
+    4.8
 
 
 waterMesh : Mesh Vertex
 waterMesh =
     let
         bl =
-            vec3 -1000 waterHeight 1000
+            vec3 -50 waterHeight 50
 
         tr =
-            vec3 1000 waterHeight -1000
+            vec3 50 waterHeight -50
 
         tl =
-            vec3 -1000 waterHeight -1000
+            vec3 -50 waterHeight -50
 
         br =
-            vec3 1000 -0.6 1000
+            vec3 50 waterHeight 50
     in
         [ attributes bl tr tl
         , attributes bl br tr
@@ -373,7 +389,7 @@ waterUniforms : Vec3 -> Uniforms
 waterUniforms camOffset =
     { rotation = Mat4.identity
     , perspective = perspective
-    , camera = camera camOffset
+    , camera = camera (vec3 0 0 0)
     , color = vec3 0.1 0.25 0.8
     , light = light
     }
